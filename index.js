@@ -32,6 +32,9 @@ async function initDB() {
     usersCollection = db.collection("user");
     profilesCollection = db.collection("profiles");
     friendsCollection=db.collection("friends");
+    // tutorsCollection=db.collection("tutors");
+    // mesagesCollection=db.collection("messages");
+    // notificationsCollection=db.collection("notifications");
     console.log("✅ Connecté à MongoDB Atlas !");
   } catch (err) {
     console.error("❌ Erreur de connexion à MongoDB :", err);
@@ -125,21 +128,77 @@ app.post("/login/user", async (req, res) => {
   }
 });
 
+// --- ROUTE : Supprime complètement un utilisateur ---
+app.delete('/delete/user', async (req, res) => {
+  const { id } = req.body;
+
+  if (!id) {
+    return res.status(400).json({ message: "L'ID de l'utilisateur est requis ❌" });
+  }
+
+  try {
+    const objectId = new ObjectId(id);
+
+    // --- 1️⃣ Supprimer l'utilisateur ---
+    const deletedUser = await usersCollection.deleteOne({ _id: objectId });
+
+    if (deletedUser.deletedCount === 0) {
+      return res.status(404).json({ message: "Utilisateur non trouvé ❌" });
+    }
+
+    // --- 2️⃣ Supprimer son profil ---
+    const deletedProfile = await profilesCollection.deleteOne({ userId: objectId });
+
+    // --- 3️⃣ Supprimer toutes ses relations d’amis (envoyées ou reçues) ---
+    const deletedFriends = await friendsCollection.deleteMany({
+      $or: [
+        { userId: objectId },
+        { friendId: objectId },
+      ],
+    });
+
+    // --- 4️⃣ Réponse finale ---
+    return res.status(200).json({
+      message: "Utilisateur et ses données supprimés avec succès ✅",
+      details: {
+        profilSupprimé: deletedProfile.deletedCount > 0,
+        amisSupprimés: deletedFriends.deletedCount,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erreur dans /delete/user :", error);
+    return res.status(500).json({ message: "Erreur interne lors de la suppression de l’utilisateur" });
+  }
+});
+
+
+
 // --- ROUTE : Modifie les informations d’un  utilisateur ---
 app.put("/user/:id", async (req, res) => {
   const { id } = req.params;
   const updateData = req.body;
 
   if (!id) {
-    return res.status(400).json({ mesage: "Id requis" });
+    return res.status(400).json({ message: "Id requis" });
   }
+
   try {
-    const result = await usersCollection.updateData(
-      { userId: new ObjectId(id) },
+    const result = await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
       { $set: updateData }
     );
-  } catch (error) {}
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
+
+    res.status(200).json({ message: "Utilisateur mis à jour ✅" });
+  } catch (error) {
+    console.error("Erreur dans PUT /user/:id :", error);
+    res.status(500).json({ message: "Erreur lors de la mise à jour de l'utilisateur" });
+  }
 });
+
 
 // --- ROUTE : Renvoie les informations d’un profil utilisateur ---
 app.get("/profiles/user/:id", async (req, res) => {
@@ -223,7 +282,7 @@ try {
       profil: profile,
     });
   } catch (error) {
-    console.error("Erreur dans /profiles/user/:id :", error);
+    console.error("Erreur dans /profiles/user/:", error);
     res
       .status(500)
       .json({ message: "Erreur lors de la récupération des profil" });
@@ -231,75 +290,170 @@ try {
 
 })
 
-// --- ROUTE : Ajoute un ami à un utilisateur ---
-app.post("/friends/user", async (req, res) => {
-  const { id1, id2 } = req.body;
 
-  if (!id1 || !id2) {
-    return res
-      .status(400)
-      .json({ message: "Les deux identifiants sont obligatoires" });
-  }
+ // --- ROUTE : Envoie une demande d’amis ---
+  app.post("/friends/user", async (req, res) => {
+    const { senderId, receiverId } = req.body;
 
-  try {
-    // Vérifie si cette amitié existe déjà
-    const existingFriendship = await friendsCollection.findOne({
-      $or: [
-        { userId:  new ObjectId(id1), friendId: new ObjectId(id2) },
-        { userId:  new ObjectId(id2), friendId: new ObjectId(id1) }
-      ]
-    });
-
-    if (existingFriendship) {
-      return res.status(400).json({ message: "Vous êtes déjà amis" });
+    if (!senderId || !receiverId) {
+      return res
+        .status(400)
+        .json({ message: "Les deux identifiants sont obligatoires" });
     }
 
-    // Ajoute les deux sens de l’amitié (symétrique)
-    await friendsCollection.insertMany([
-      { userId: new ObjectId(id1), friendId: new ObjectId(id2), createdAt: new Date() },
-      { userId: new ObjectId(id2), friendId: new ObjectId(id1), createdAt: new Date() }
-    ]);
+    try {
+      // Vérifie si une relation existe déjà (dans un sens ou dans l'autre)
+      const existing = await friendsCollection.findOne({
+        $or: [
+          { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+          { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+        ],
+      });
 
-    res.status(201).json({ message: "Ami ajouté avec succès ✅" });
-  } catch (error) {
-    console.error("Erreur dans /friends/user :", error);
-    res.status(500).json({ message: "Erreur lors de l’ajout de l’ami" });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Une demande ou une amitié existe déjà" });
+      }
+
+      // Crée une nouvelle demande
+      await friendsCollection.insertOne({
+        senderId: new ObjectId(senderId),
+        receiverId: new ObjectId(receiverId),
+        status: "pending",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      res.status(201).json({ message: "Demande d’ami envoyée ✅" });
+    } catch (error) {
+      console.error("Erreur dans POST /friends/user :", error);
+      res
+        .status(500)
+        .json({ message: "Erreur lors de l’envoi de la demande d’ami" });
+    }
+  });
+
+  // --- ROUTE : Récupère les amis selon un statut ---
+  async function getFriendsByStatus(req, res, status) {
+    const { id } = req.params;
+
+    if (!id) return res.status(400).json({ message: "Id requis" });
+
+    try {
+      const relations = await friendsCollection
+        .find({
+          $or: [
+            { senderId: new ObjectId(id), status },
+            { receiverId: new ObjectId(id), status },
+          ],
+        })
+        .toArray();
+
+      if (relations.length === 0) {
+        return res.status(200).json({ message: "Aucun ami trouvé", amis: [] });
+      }
+
+      // Extraire les IDs des amis
+      const friendIds = relations.map((r) =>
+        r.senderId.toString() === id ? r.receiverId : r.senderId
+      );
+
+      const friendsProfiles = await profilesCollection
+        .find({ userId: { $in: friendIds } })
+        .toArray();
+
+      res.status(200).json({
+        message: "Amis trouvés ✅",
+        amis: friendsProfiles,
+      });
+    } catch (error) {
+      console.error(`Erreur dans GET /friends/${status}/user/:id :`, error);
+      res.status(500).json({ message: "Erreur lors de la récupération des amis" });
+    }
   }
-});
 
-// --- ROUTE : Récupère les amis d’un utilisateur ---
-app.get("/friends/user/:id", async (req, res) => {
-  const { id } = req.params;
+  // --- ROUTES regroupées ---
+  app.get("/friends/accepted/user/:id", (req, res) =>
+    getFriendsByStatus(req, res, "accepted")
+  );
+  app.get("/friends/refused/user/:id", (req, res) =>
+    getFriendsByStatus(req, res, "refused")
+  );
+  app.get("/friends/pending/user/:id", (req, res) =>
+    getFriendsByStatus(req, res, "pending")
+  );
 
-  if (!id) {
-    return res.status(400).json({ message: "Id requis" });
-  }
+  // --- ROUTE : Met à jour le statut d’une relation ---
+  app.put("/friends/user", async (req, res) => {
+    const { senderId, receiverId, status } = req.body;
 
-  try {
-    // Trouve toutes les relations d’amis pour cet utilisateur
-    const friends = await friendsCollection
-      .find({ userId: new ObjectId(id) })
-      .toArray();
-
-    if (!friends || friends.length === 0) {
-      return res.status(404).json({ message: "Aucun ami trouvé" });
+    if (!senderId || !receiverId || !status) {
+      return res
+        .status(400)
+        .json({ message: "Champs manquants (senderId, receiverId, status)" });
     }
 
-    // Récupère les profils de chaque ami
-    const friendIds = friends.map(f => f.friendId);
-    const friendProfiles = await profilesCollection
-      .find({ userId: { $in: friendIds } })
-      .toArray();
+    if (!["accepted", "refused"].includes(status)) {
+      return res
+        .status(400)
+        .json({ message: "Le statut doit être 'accepted' ou 'refused'" });
+    }
 
-    res.status(200).json({
-      message: "Amis trouvés ✅",
-      amis: friendProfiles,
-    });
-  } catch (error) {
-    console.error("Erreur dans /friends/user/:id :", error);
-    res.status(500).json({ message: "Erreur lors de la récupération des amis" });
-  }
-});
+    try {
+      const result = await friendsCollection.updateOne(
+        {
+          $or: [
+            { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+            { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+          ],
+        },
+        { $set: { status, updatedAt: new Date() } }
+      );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ message: "Demande d’ami introuvable" });
+      }
+
+      res.status(200).json({
+        message: `Demande ${status === "accepted" ? "acceptée ✅" : "refusée ❌"}`,
+      });
+    } catch (error) {
+      console.error("Erreur dans PUT /friends/user :", error);
+      res
+        .status(500)
+        .json({ message: "Erreur lors de la mise à jour de la relation" });
+    }
+  });
+
+  // --- ROUTE : Supprime une relation d’amitié ---
+  app.delete("/friends/user", async (req, res) => {
+    const { senderId, receiverId } = req.body;
+
+    if (!senderId || !receiverId) {
+      return res
+        .status(400)
+        .json({ message: "Les deux identifiants sont obligatoires" });
+    }
+
+    try {
+      const result = await friendsCollection.deleteOne({
+        $or: [
+          { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+          { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+        ],
+      });
+
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ message: "Relation introuvable" });
+      }
+
+      res.status(200).json({ message: "Relation supprimée ✅" });
+    } catch (error) {
+      console.error("Erreur dans DELETE /friends/user :", error);
+      res.status(500).json({ message: "Erreur lors de la suppression de l’amitié" });
+    }
+  });
 
 
 // 🔌 Fermer proprement la connexion MongoDB si le serveur s'arrête
@@ -314,21 +468,3 @@ app.listen(PORT, () =>
   console.log(`✅ Serveur démarré sur http://localhost:${PORT}`)
 );
 
-/*Schèmas profils
-  userId: new ObjectId(result.insertedId),
-  bio: "",
-  filiere: "",
-  niveau: "",
-  interests: [],
-  isTutor: false,
-  campus: "",
-  photoUrl: "",
-  createdAt: new Date(),
-*/
-/*Schèmas des cours d'un tutor
-
-  "_id": Id de l'utilisateur,
-  "name": Nom du cours,
-  "filiere": "La fillière du cours"
-
-*/

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
     "start": "nodemon index.js",
     "dev": "node index.js",
     "build": "echo 'Rien à build pour du JS pur 🚀'"
@@ -19,5 +19,9 @@
     "express": "^5.1.0",
     "mongoose": "^8.19.2",
     "nodemon": "^3.1.10"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0",
+    "supertest": "^7.1.4"
   }
 }
