@@ -128,41 +128,26 @@ app.post("/login/user", async (req, res) => {
 });
 
 // --- ROUTE : Supprime complètement un utilisateur ---
-app.delete("/delete/user", async (req, res) => {
-  const { id } = req.body;
+app.delete("/delete/user/:id", async (req, res) => {
+  const { id } = req.params;
 
   if (!id) {
-    return res
-      .status(400)
-      .json({ message: "L'ID de l'utilisateur est requis ❌" });
+    return res.status(400).json({ message: "L'ID de l'utilisateur est requis ❌" });
   }
 
   try {
     const objectId = new ObjectId(id);
 
-    // --- 1️⃣ Supprimer l'utilisateur ---
     const deletedUser = await usersCollection.deleteOne({ _id: objectId });
-
     if (deletedUser.deletedCount === 0) {
       return res.status(404).json({ message: "Utilisateur non trouvé ❌" });
     }
 
-    // --- 2️⃣ Supprimer son profil ---
-    const deletedProfile = await profilesCollection.deleteOne({
-      userId: objectId,
-    });
-
-    // --- 3️⃣ Supprimer toutes ses relations d’amis (envoyées ou reçues) ---
+    const deletedProfile = await profilesCollection.deleteOne({ userId: objectId });
     const deletedFriends = await friendsCollection.deleteMany({
       $or: [{ userId: objectId }, { friendId: objectId }],
     });
 
-    // Supprimer tous ses messages
-    // const deletedMessages = await mesagesCollection.deleteMany({
-    //   $or: [{ senderId: objectId }, { receiverId: objectId }],
-    // });
-
-    // --- 4️⃣ Réponse finale ---
     return res.status(200).json({
       message: "Utilisateur et ses données supprimés avec succès ✅",
       details: {
@@ -172,11 +157,9 @@ app.delete("/delete/user", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Erreur dans /delete/user :", error);
-    return res
-      .status(500)
-      .json({
-        message: "Erreur interne lors de la suppression de l’utilisateur",
-      });
+    return res.status(500).json({
+      message: "Erreur interne lors de la suppression de l’utilisateur",
+    });
   }
 });
 
@@ -491,6 +474,8 @@ app.delete("/friends/user", async (req, res) => {
       .json({ message: "Erreur lors de la suppression de l’amitié" });
   }
 });
+
+
 
 // 🔌 Fermer proprement la connexion MongoDB si le serveur s'arrête
 process.on("SIGINT", async () => {
