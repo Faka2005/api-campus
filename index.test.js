@@ -1,65 +1,117 @@
 import test, { describe } from "node:test";
 import assert from "node:assert";
 import request from "supertest";
-import app, { dbReady ,profilesCollection} from "./index.js";
+import app, { dbReady ,usersCollection,profilesCollection,friendsCollection,signalementCollection,messagesCollection} from "./index.js";
 import { ObjectId } from "mongodb";
+
 let userId;
 
 describe("User", () => {
-  //Fait
   test("POST /register/user - devrait créer utilisateur et profil", async () => {
-  await dbReady;
-
-  const res = await request(app)
-    .post("/register/user")
-    .send({
-      firstName: "Joe",
-      lastName: "Doe",
-      email: "joe@gmail.com",
-      password: "joe1235",
-      sexe: "male",
-    });
-
-  userId = res.body.userId;
-  assert.strictEqual(res.statusCode, 201);
-  assert.ok(userId);
-
-  // ✅ Vérifier le profil
-  
-  const profile = await profilesCollection.findOne({ userId: new ObjectId(userId) });
-  assert.ok(profile, "Le profil n'a pas été créé !");
-  assert.strictEqual(profile.firstName, "Joe");
-  assert.strictEqual(profile.lastName, "Doe");
-  });
-  test("POST /register/user - devrait échouer si un champ obligatoire est manquant", () => {});
-  //Fait
-  test("POST /register/user - devrait échouer si l’email est déjà utilisé",async () => {
-    await dbReady; // ✅ on attend que MongoDB soit connecté
+    await dbReady;
 
     const res = await request(app)
       .post("/register/user")
       .send({
-        firstName: "Joe2",
-        lastName: "Doe2",
+        firstName: "Joe",
+        lastName: "Doe",
         email: "joe@gmail.com",
         password: "joe1235",
         sexe: "male",
       });
 
-    
+    userId = res.body.userId;
+    assert.strictEqual(res.statusCode, 201);
+    assert.ok(userId, "L'Id n'a pas été récupéré");
+
+    // ✅ Vérifier le profil
+    const profile = await profilesCollection.findOne({ userId: new ObjectId(userId) });
+    assert.ok(profile, "Le profil n'a pas été créé !");
+    assert.strictEqual(profile.firstName, "Joe");
+    assert.strictEqual(profile.lastName, "Doe");
+  });
+
+  test("POST /register/user - devrait échouer si un champ obligatoire est manquant", async () => {
+    await dbReady;
+
+    const res = await request(app).post("/register/user").send({
+      firstName: "Joe",
+      lastName: "",
+      email: "joe@gmail.com",
+      password: "joe1235",
+      sexe: "male",
+    });
     assert.strictEqual(res.statusCode, 400);
   });
 
-  test("POST /login/user - devrait connecter un utilisateur valide", () => {});
-  test("POST /login/user - devrait échouer avec un mauvais mot de passe", () => {});
-  test("POST /login/user - devrait échouer si l’utilisateur n’existe pas", () => {});
+  test("POST /register/user - devrait échouer si l’email est déjà utilisé", async () => {
+    await dbReady;
 
-  test("PUT /user/:id - devrait mettre à jour les informations de l’utilisateur", () => {});
-  test("PUT /user/:id - devrait renvoyer 404 si l’utilisateur n’existe pas", () => {});
-  
-  test("DELETE /delete/user/:id - devrait supprimer l’utilisateur et ses données associées", () => {});
-  test("DELETE /delete/user/:id - devrait renvoyer 404 si l’utilisateur n’existe pas", () => {});
+    const res = await request(app).post("/register/user").send({
+      firstName: "Joe2",
+      lastName: "Doe2",
+      email: "joe@gmail.com",
+      password: "joe1235",
+      sexe: "male",
+    });
+    assert.strictEqual(res.statusCode, 400);
+  });
+
+  test("POST /login/user - devrait connecter un utilisateur valide et renvoyer son profil", async () => {
+    const res = await request(app).post("/login/user").send({
+      email: "joe@gmail.com",
+      password: "joe1235",
+    });
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(res.body.profile, "Le profil n'a pas été récupéré");
+    assert.strictEqual(res.body.profile.userId, userId);
+  });
+
+  test("POST /login/user - devrait échouer avec un mauvais mot de passe", async () => {
+    const res = await request(app).post("/login/user").send({
+      email: "joe@gmail.com",
+      password: "erreur",
+    });
+    assert.strictEqual(res.statusCode, 401);
+  });
+
+  test("POST /login/user - devrait échouer si l’utilisateur n’existe pas", async () => {
+    const res = await request(app).post("/login/user").send({
+      email: "ajoe@gmail.com",
+      password: "erreur",
+    });
+    assert.strictEqual(res.statusCode, 404);
+  });
+
+  test("PUT /user/:id - devrait mettre à jour les informations de l’utilisateur", async () => {
+    const res = await request(app).put(`/user/${userId}`).send({
+      sexe: "femelle",
+    });
+    assert.strictEqual(res.statusCode, 200);
+  });
+
+  test("PUT /user/:id - devrait renvoyer 404 si l’utilisateur n’existe pas", async () => {
+    const fakeId = new ObjectId();
+    const res = await request(app).put(`/user/${fakeId}`).send({
+      sexe: "femelle",
+    });
+    assert.strictEqual(res.statusCode, 404);
+  });
+
+  test("DELETE /delete/user/:id - devrait supprimer l’utilisateur et ses données associées", async () => {
+    const res = await request(app).delete(`/delete/user/${userId}`);
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(res.body.details.profilSupprimé);
+    assert.ok("amisSupprimés" in res.body.details);
+    assert.ok("messagesSupprimés" in res.body.details);
+  });
+
+  test("DELETE /delete/user/:id - devrait renvoyer 404 si l’utilisateur n’existe pas", async () => {
+    const res = await request(app).delete(`/delete/user/${userId}`);
+    assert.strictEqual(res.statusCode, 404);
+  });
 });
+
 
 describe("Profile", () => {
   test("GET /profiles/user/:id - devrait récupérer le profil d’un utilisateur existant", () => {});

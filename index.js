@@ -1,20 +1,23 @@
-// 📦 Dépendances
-import dotenv from 'dotenv'
-import express from 'express'
-import cors from'cors'
-import multer from 'multer'
+// 📦 Dépendances principales
+import dotenv from "dotenv";
+import express from "express";
+import cors from "cors";
+import multer from "multer";
 import bcrypt from "bcrypt";
-import  { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import { createServer } from "http";
+import { Server } from "socket.io";
 
 dotenv.config();
 
-// 🚀 Initialisation de l'app Express
-
+// 🚀 Initialisation Express + HTTP + Socket.io
 const app = express();
+const httpServer = createServer(app);
 export const PORT = process.env.PORT || 5000;
 
+// ⚙️ Middlewares globaux
 app.use(cors());
-app.use(express.json({ limit: "10mb" })); // Limite JSON pour gros fichiers
+app.use(express.json({ limit: "10mb" }));
 
 // 🌍 Connexion MongoDB
 const uri = process.env.MONGODB_URI;
@@ -31,9 +34,8 @@ export let db,
   profilesCollection,
   friendsCollection,
   signalementCollection,
-  messagesCollection
+  messagesCollection;
 
-// --- Initialisation de la base de données ---
 export const dbReady = (async function initDB() {
   try {
     await client.connect();
@@ -53,59 +55,19 @@ export const dbReady = (async function initDB() {
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, "uploads/"),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+    filename: (req, file, cb) =>
+      cb(null, `${Date.now()}-${file.originalname}`),
   }),
-  limits: { fileSize: 5 * 1024 * 1024 }, // limite à 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
 });
 
-// --- ROUTES ---
-// Upload photo de profil
-app.post("/photo", upload.single("photo"), async (req, res) => {
-  try {
-    const { userId } = req.body;
-    const photoPath = `/uploads/${req.file.filename}`;
-    await profilesCollection.updateOne(
-      { userId: new ObjectId(userId) },
-      { $set: { photoUrl: photoPath } }
-    );
-    res.json({ message: "Photo enregistrée ✅", path: photoPath });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Erreur serveur" });
-  }
-});
-
-// Récupérer photo d'un utilisateur
-app.get("/user/photo/:id", async (req, res) => {
-  const { id } = req.params;
-  if (!id) return res.status(400).json({ message: "Id requis" });
-
-  try {
-    const profile = await profilesCollection.findOne({
-      userId: new ObjectId(id),
-    });
-
-    if (!profile || !profile.photoUrl) {
-      return res
-        .status(404)
-        .json({ message: "Aucune photo enregistrée pour cet utilisateur" });
-    }
-
-    const fullUrl = `${req.protocol}://${req.get("host")}${profile.photoUrl}`;
-    res.status(200).json({ message: "Photo récupérée ✅", photoUrl: fullUrl });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Erreur lors de la récupération de la photo" });
-  }
-});
-
-// --- ROUTES UTILISATEURS ---
-// Enregistrement utilisateur
+// =========================
+// 🚹 UTILISATEURS
+// =========================
 app.post("/register/user", async (req, res) => {
   const { firstName, lastName, email, password, sexe } = req.body;
-  if (!firstName || !lastName || !sexe||!email || !password) {
+  if (!firstName || !lastName || !email || !password || !sexe)
     return res.status(400).json({ message: "Tous les champs sont obligatoires" });
-  }
 
   try {
     const existingUser = await usersCollection.findOne({ email });
@@ -134,16 +96,16 @@ app.post("/register/user", async (req, res) => {
       createdAt: new Date(),
     });
 
-    res
-      .status(201)
-      .json({ message: "Utilisateur enregistré avec succès ✅", userId: result.insertedId });
+    res.status(201).json({
+      message: "Utilisateur enregistré avec succès ✅",
+      userId: result.insertedId,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Erreur lors de l’enregistrement" });
   }
 });
 
-// Connexion utilisateur
 app.post("/login/user", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
@@ -165,112 +127,185 @@ app.post("/login/user", async (req, res) => {
   }
 });
 
-// Supprimer un utilisateur
-app.delete("/delete/user/:id", async (req, res) => {
-  const { id } = req.params;
-  if (!id)
-    return res.status(400).json({ message: "L'ID de l'utilisateur est requis ❌" });
-
-  try {
-    const objectId = new ObjectId(id);
-    const deletedUser = await usersCollection.deleteOne({ _id: objectId });
-    if (deletedUser.deletedCount === 0) {
-      return res.status(404).json({ message: "Utilisateur non trouvé ❌" });
-    }
-
-    const deletedProfile = await profilesCollection.deleteOne({ userId: objectId });
-    const deletedFriends = await friendsCollection.deleteMany({
-      $or: [{ userId: objectId }, { friendId: objectId }],
-    });
-    const deletedMessages = await messagesCollection.deleteMany({
-      $or: [{ senderId: objectId }, { receiverId: objectId }],
-    });
-
-    res.status(200).json({
-      message: "Toutes les données de cet utilisateur ont été supprimées ✅",
-      details: {
-        profilSupprimé: deletedProfile.deletedCount > 0,
-        amisSupprimés: deletedFriends.deletedCount,
-        messagesSupprimés: deletedMessages.deletedCount,
-      },
-    });
-  } catch (error) {
-    console.error("❌ Erreur dans /delete/user :", error);
-    res
-      .status(500)
-      .json({ message: "Erreur interne lors de la suppression de l’utilisateur" });
-  }
-});
-
-// Modifier utilisateur
 app.put("/user/:id", async (req, res) => {
   const { id } = req.params;
   const updateData = req.body;
-
-  if (!id) return res.status(400).json({ message: "Id requis" });
-
   try {
     const result = await usersCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: updateData }
     );
-
     if (result.matchedCount === 0)
       return res.status(404).json({ message: "Utilisateur non trouvé" });
-
     res.status(200).json({ message: "Utilisateur mis à jour ✅" });
   } catch (error) {
-    console.error("Erreur dans PUT /user/:id :", error);
-    res.status(500).json({ message: "Erreur lors de la mise à jour de l'utilisateur" });
+    console.error(error);
+    res.status(500).json({ message: "Erreur lors de la mise à jour" });
   }
 });
 
-// Récupérer profil utilisateur
-app.get("/profiles/user/:id", async (req, res) => {
+app.delete("/delete/user/:id", async (req, res) => {
   const { id } = req.params;
-  if (!id) return res.status(400).json({ message: "Id requis" });
-
   try {
-    const profile = await profilesCollection.findOne({ userId: new ObjectId(id) });
-    if (!profile) return res.status(404).json({ message: "Profil non trouvé" });
+    const objectId = new ObjectId(id);
+    const deletedUser = await usersCollection.deleteOne({ _id: objectId });
+    if (deletedUser.deletedCount === 0)
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
 
-    res.status(200).json({ message: "Profil trouvé ✅", profil: profile });
+    await profilesCollection.deleteOne({ userId: objectId });
+    await friendsCollection.deleteMany({
+      $or: [{ userId: objectId }, { friendId: objectId }],
+    });
+    await messagesCollection.deleteMany({
+      $or: [{ senderId: objectId }, { receiverId: objectId }],
+    });
+
+    res.status(200).json({
+      message: "Utilisateur et ses données supprimés ✅",
+    });
   } catch (error) {
-    console.error("Erreur dans /profiles/user/:id :", error);
-    res.status(500).json({ message: "Erreur lors de la récupération du profil" });
+    console.error(error);
+    res.status(500).json({ message: "Erreur lors de la suppression" });
   }
 });
 
-// Modifier profil utilisateur
-app.put("/profiles/user/:id", async (req, res) => {
-  const { id } = req.params;
-  const { interests, ...updateData } = req.body;
+// =========================
+// 🧑 PROFILS
+// =========================
+app.get("/profiles/user/:id", async (req, res) => {
+  try {
+    const profile = await profilesCollection.findOne({
+      userId: new ObjectId(req.params.id),
+    });
+    if (!profile) return res.status(404).json({ message: "Profil non trouvé" });
+    res.json({ message: "Profil trouvé ✅", profil: profile });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur serveur" });
+  }
+});
 
+app.put("/profiles/user/:id", async (req, res) => {
+  const { interests, ...updateData } = req.body;
   try {
     if (interests) {
       await profilesCollection.updateOne(
-        { userId: new ObjectId(id) },
+        { userId: new ObjectId(req.params.id) },
         { $addToSet: { interests: { $each: interests } } }
       );
     }
-
     const result = await profilesCollection.updateOne(
-      { userId: new ObjectId(id) },
+      { userId: new ObjectId(req.params.id) },
       { $set: updateData }
     );
-
-    const updatedProfile = await profilesCollection.findOne({ userId: new ObjectId(id) });
-    res.status(200).json({
-      message: `${result.modifiedCount} champs mis à jour ✅`,
-      profil: updatedProfile,
+    const updated = await profilesCollection.findOne({
+      userId: new ObjectId(req.params.id),
     });
+    res.json({ message: `${result.modifiedCount} champs modifiés ✅`, profil: updated });
   } catch (error) {
-    console.error("Erreur dans /profiles/user/:id (PUT) :", error);
-    res.status(500).json({ message: "Erreur lors de la mise à jour du profil" });
+    res.status(500).json({ message: "Erreur mise à jour profil" });
   }
 });
 
-// 🔌 Fermer proprement MongoDB
+// =========================
+// 👥 AMIS
+// =========================
+app.post("/friends/add", async (req, res) => {
+  const { userId, friendId } = req.body;
+  if (!userId || !friendId)
+    return res.status(400).json({ message: "Ids manquants" });
+  try {
+    const exist = await friendsCollection.findOne({ userId, friendId });
+    if (exist) return res.status(400).json({ message: "Déjà amis" });
+    await friendsCollection.insertOne({
+      userId,
+      friendId,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ message: "Ami ajouté ✅" });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur ajout ami" });
+  }
+});
+
+app.get("/friends/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const friends = await friendsCollection.find({ userId: id }).toArray();
+    res.json({ message: "Amis récupérés ✅", friends });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur récupération amis" });
+  }
+});
+
+// =========================
+// 💬 MESSAGES
+// =========================
+app.get("/messages/:senderId/:receiverId", async (req, res) => {
+  const { senderId, receiverId } = req.params;
+  try {
+    const messages = await messagesCollection
+      .find({
+        $or: [
+          { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+          { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+        ],
+      })
+      .sort({ createdAt: 1 })
+      .toArray();
+    res.json({ message: "Messages récupérés ✅", messages });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur récupération messages" });
+  }
+});
+
+// =========================
+// 🚨 SIGNALEMENTS
+// =========================
+app.post("/signalement", async (req, res) => {
+  const { reporterId, reportedId, reason } = req.body;
+  if (!reporterId || !reportedId || !reason)
+    return res.status(400).json({ message: "Champs requis manquants" });
+  try {
+    await signalementCollection.insertOne({
+      reporterId,
+      reportedId,
+      reason,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ message: "Signalement enregistré ✅" });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur signalement" });
+  }
+});
+
+// =========================
+// ⚡ SOCKET.IO
+// =========================
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
+
+io.on("connection", (socket) => {
+  console.log(`🟢 Nouveau client connecté : ${socket.id}`);
+
+  socket.on("send_message", async (data) => {
+    const { senderId, receiverId, content } = data;
+    const msg = {
+      senderId: new ObjectId(senderId),
+      receiverId: new ObjectId(receiverId),
+      content,
+      createdAt: new Date(),
+    };
+    await messagesCollection.insertOne(msg);
+    io.emit("receive_message", msg);
+  });
+
+  socket.on("disconnect", () =>
+    console.log(`🔴 Client déconnecté : ${socket.id}`)
+  );
+});
+
+// 🔌 Fermeture MongoDB
 process.on("SIGINT", async () => {
   await client.close();
   console.log("🔌 Connexion MongoDB fermée");
