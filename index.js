@@ -1,3 +1,4 @@
+// server.ts (remplace ton fichier actuel)
 // 📦 Dépendances principales
 import dotenv from "dotenv";
 import express from "express";
@@ -10,9 +11,8 @@ import { Server } from "socket.io";
 
 dotenv.config();
 
-// 🚀 Initialisation Express + HTTP + Socket.io
+// 🚀 Initialisation Express
 const app = express();
-const httpServer = createServer(app);
 export const PORT = process.env.PORT || 5000;
 
 // ⚙️ Middlewares globaux
@@ -55,11 +55,33 @@ export const dbReady = (async function initDB() {
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, "uploads/"),
-    filename: (req, file, cb) =>
-      cb(null, `${Date.now()}-${file.originalname}`),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
   }),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
 });
+
+// =========================
+// ⚡ HTTP + Socket.io (créés tôt pour être disponibles dans les routes)
+// =========================
+const httpServer = createServer(app);
+export const io = new Server(httpServer, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
+
+// Helper: convertit un document message Mongo en objet sérialisable côté client
+function serializeMessage(doc) {
+  return {
+    _id: doc._id?.toString?.() ?? null,
+    senderId: doc.senderId?.toString?.() ?? null,
+    receiverId: doc.receiverId?.toString?.() ?? null,
+    content: doc.content ?? "",
+    timestamp: (doc.createdAt ?? doc.timestamp)?.toISOString?.() ?? null,
+  };
+}
 
 // =========================
 // 🚹 UTILISATEURS
@@ -98,7 +120,7 @@ app.post("/register/user", async (req, res) => {
 
     res.status(201).json({
       message: "Utilisateur enregistré avec succès ✅",
-      userId: result.insertedId,
+      userId: result.insertedId.toString(),
     });
   } catch (error) {
     console.error(error);
@@ -120,6 +142,8 @@ app.post("/login/user", async (req, res) => {
       return res.status(401).json({ message: "Mot de passe incorrect" });
 
     const profile = await profilesCollection.findOne({ userId: user._id });
+    // sérialiser l'id
+    if (profile) profile.userId = profile.userId?.toString?.() ?? profile.userId;
     res.status(200).json({ message: "Connexion réussie ✅", profile });
   } catch (error) {
     console.error(error);
@@ -178,8 +202,11 @@ app.get("/profiles/user/:id", async (req, res) => {
       userId: new ObjectId(req.params.id),
     });
     if (!profile) return res.status(404).json({ message: "Profil non trouvé" });
+    // sérialiser userId
+    profile.userId = profile.userId?.toString?.() ?? profile.userId;
     res.json({ message: "Profil trouvé ✅", profil: profile });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Erreur serveur" });
   }
 });
@@ -200,47 +227,233 @@ app.put("/profiles/user/:id", async (req, res) => {
     const updated = await profilesCollection.findOne({
       userId: new ObjectId(req.params.id),
     });
+    if (updated) updated.userId = updated.userId?.toString?.() ?? updated.userId;
     res.json({ message: `${result.modifiedCount} champs modifiés ✅`, profil: updated });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Erreur mise à jour profil" });
+  }
+});
+
+app.get("/profiles/users", async (req, res) => {
+  try {
+    const profils = await profilesCollection.find({}).toArray();
+    // sérialiser userId pour chaque profil
+    const serialized = profils.map((p) => ({ ...p, userId: p.userId?.toString?.() ?? p.userId }));
+    res.json({ message: "Profils récupérés ✅", profils: serialized });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Erreur serveur lors de la récupération des profils" });
   }
 });
 
 // =========================
 // 👥 AMIS
 // =========================
-app.post("/friends/add", async (req, res) => {
-  const { userId, friendId } = req.body;
-  if (!userId || !friendId)
-    return res.status(400).json({ message: "Ids manquants" });
+
+// --- ROUTE : Envoie une demande d’amis ---
+app.post("/friends/user", async (req, res) => {
+  const { senderId, receiverId } = req.body;
+
+  if (!senderId || !receiverId) {
+    return res
+      .status(400)
+      .json({ message: "Les deux identifiants sont obligatoires" });
+  }
+
   try {
-    const exist = await friendsCollection.findOne({ userId, friendId });
-    if (exist) return res.status(400).json({ message: "Déjà amis" });
-    await friendsCollection.insertOne({
-      userId,
-      friendId,
-      createdAt: new Date(),
+    // Vérifie si une relation existe déjà (dans un sens ou dans l'autre)
+    const existing = await friendsCollection.findOne({
+      $or: [
+        {
+          senderId: new ObjectId(senderId),
+          receiverId: new ObjectId(receiverId),
+        },
+        {
+          senderId: new ObjectId(receiverId),
+          receiverId: new ObjectId(senderId),
+        },
+      ],
     });
-    res.status(201).json({ message: "Ami ajouté ✅" });
+
+    if (existing) {
+      return res
+        .status(400)
+        .json({ message: "Une demande ou une amitié existe déjà" });
+    }
+
+    // Crée une nouvelle demande
+    await friendsCollection.insertOne({
+      senderId: new ObjectId(senderId),
+      receiverId: new ObjectId(receiverId),
+      status: "pending",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    res.status(201).json({ message: "Demande d’ami envoyée ✅" });
   } catch (error) {
-    res.status(500).json({ message: "Erreur ajout ami" });
+    console.error("Erreur dans POST /friends/user :", error);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de l’envoi de la demande d’ami" });
   }
 });
 
-app.get("/friends/:id", async (req, res) => {
+// --- ROUTE : Récupère les amis selon un statut ---
+async function getFriendsByStatus(req, res, status) {
   const { id } = req.params;
+
+  if (!id) return res.status(400).json({ message: "Id requis" });
+
   try {
-    const friends = await friendsCollection.find({ userId: id }).toArray();
-    res.json({ message: "Amis récupérés ✅", friends });
+    const relations = await friendsCollection
+      .find({
+        $or: [
+          { senderId: new ObjectId(id), status },
+          { receiverId: new ObjectId(id), status },
+        ],
+      })
+      .toArray();
+
+    if (relations.length === 0) {
+      return res.status(200).json({ message: "Aucun ami trouvé", amis: [] });
+    }
+
+    // Extraire les IDs des amis
+    const friendIds = relations.map((r) =>
+      r.senderId.toString() === id ? r.receiverId : r.senderId
+    );
+
+    const friendsProfiles = await profilesCollection
+      .find({ userId: { $in: friendIds } })
+      .toArray();
+
+    // sérialiser userIds
+    const serialized = friendsProfiles.map((p) => ({ ...p, userId: p.userId?.toString?.() ?? p.userId }));
+
+    res.status(200).json({
+      message: "Amis trouvés ✅",
+      amis: serialized,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Erreur récupération amis" });
+    console.error(`Erreur dans GET /friends/${status}/user/:id :`, error);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de la récupération des amis" });
+  }
+}
+
+// --- ROUTES regroupées ---
+app.get("/friends/accepted/user/:id", (req, res) =>
+  getFriendsByStatus(req, res, "accepted")
+);
+app.get("/friends/refused/user/:id", (req, res) =>
+  getFriendsByStatus(req, res, "refused")
+);
+app.get("/friends/pending/user/:id", (req, res) =>
+  getFriendsByStatus(req, res, "pending")
+);
+
+// --- ROUTE : Met à jour le statut d’une relation ---
+app.put("/friends/user", async (req, res) => {
+  const { senderId, receiverId, status } = req.body;
+
+  if (!senderId || !receiverId || !status) {
+    return res
+      .status(400)
+      .json({ message: "Champs manquants (senderId, receiverId, status)" });
+  }
+
+  if (!["accepted", "refused"].includes(status)) {
+    return res
+      .status(400)
+      .json({ message: "Le statut doit être 'accepted' ou 'refused'" });
+  }
+
+  try {
+    const result = await friendsCollection.updateOne(
+      {
+        $or: [
+          {
+            senderId: new ObjectId(senderId),
+            receiverId: new ObjectId(receiverId),
+          },
+          {
+            senderId: new ObjectId(receiverId),
+            receiverId: new ObjectId(senderId),
+          },
+        ],
+      },
+      { $set: { status, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Demande d’ami introuvable" });
+    }
+
+    res.status(200).json({
+      message: `Demande ${
+        status === "accepted" ? "acceptée ✅" : "refusée ❌"
+      }`,
+    });
+  } catch (error) {
+    console.error("Erreur dans PUT /friends/user :", error);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de la mise à jour de la relation" });
+  }
+});
+
+// --- ROUTE : Supprime une relation d’amitié ---
+app.delete("/friends/user", async (req, res) => {
+  const { senderId, receiverId } = req.body;
+
+  if (!senderId || !receiverId) {
+    return res
+      .status(400)
+      .json({ message: "Les deux identifiants sont obligatoires" });
+  }
+
+  try {
+    const result = await friendsCollection.deleteOne({
+      $or: [
+        {
+          senderId: new ObjectId(senderId),
+          receiverId: new ObjectId(receiverId),
+        },
+        {
+          senderId: new ObjectId(receiverId),
+          receiverId: new ObjectId(senderId),
+        },
+      ],
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Relation introuvable" });
+    }
+
+    // Supprimer tous les messages entre les deux utilisateurs
+    const deletedMessages = await messagesCollection.deleteMany({
+      $or: [
+        { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+        { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+      ],
+    });
+
+    res.status(200).json({ message: "Relation et conversation supprimées ✅", deletedMessagesCount: deletedMessages.deletedCount });
+  } catch (error) {
+    console.error("Erreur dans DELETE /friends/user :", error);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de la suppression de l’amitié" });
   }
 });
 
 // =========================
 // 💬 MESSAGES
 // =========================
-app.get("/messages/:senderId/:receiverId", async (req, res) => {
+app.get("/messages/conversation/:senderId/:receiverId", async (req, res) => {
   const { senderId, receiverId } = req.params;
   try {
     const messages = await messagesCollection
@@ -252,9 +465,106 @@ app.get("/messages/:senderId/:receiverId", async (req, res) => {
       })
       .sort({ createdAt: 1 })
       .toArray();
-    res.json({ message: "Messages récupérés ✅", messages });
+
+    const serialized = messages.map(serializeMessage);
+    res.json({ message: "Messages récupérés ✅", messages: serialized });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Erreur récupération messages" });
+  }
+});
+
+/**
+ * 🔹 Récupérer les messages entre deux utilisateurs
+ */
+app.get("/conversation/:userId1/:userId2", async (req, res) => {
+  const { userId1, userId2 } = req.params;
+  try {
+    const messages = await messagesCollection
+      .find({
+        $or: [
+          { senderId: new ObjectId(userId1), receiverId: new ObjectId(userId2) },
+          { senderId: new ObjectId(userId2), receiverId: new ObjectId(userId1) },
+        ],
+      })
+      .sort({ createdAt: 1 })
+      .toArray();
+
+    const serialized = messages.map(serializeMessage);
+    res.json({ message: "Messages récupérés ✅", messages: serialized });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Erreur récupération messages" });
+  }
+});
+
+/**
+ * 🔹 Envoyer un message
+ */
+app.post("/send", async (req, res) => {
+  const { senderId, receiverId, content } = req.body;
+
+  if (!senderId || !receiverId || !content) {
+    return res.status(400).json({ message: "Paramètres manquants" });
+  }
+
+  try {
+    const newMessage = {
+      senderId: new ObjectId(senderId),
+      receiverId: new ObjectId(receiverId),
+      content,
+      createdAt: new Date(),
+    };
+
+    const result = await messagesCollection.insertOne(newMessage);
+
+    // 🔹 Émettre via Socket.IO -> informer le sender et le receiver dans leurs rooms
+    const payload = {
+      _id: result.insertedId.toString(),
+      senderId: senderId.toString(),
+      receiverId: receiverId.toString(),
+      content,
+      timestamp: newMessage.createdAt.toISOString(),
+    };
+
+    // émettre vers les deux rooms (si les deux utilisateurs ont joint leurs rooms)
+    io.to(receiverId.toString()).to(senderId.toString()).emit("receive_message", payload);
+
+    res.json({ message: "Message envoyé ✅", newMessage: payload });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Erreur lors de l’envoi du message" });
+  }
+});
+
+/**
+ * 🔹 Modifier un message
+ */
+app.put("/edit/:messageId", async (req, res) => {
+  const { messageId } = req.params;
+  const { content } = req.body;
+
+  if (!content) return res.status(400).json({ message: "Contenu manquant" });
+
+  try {
+    const result = await messagesCollection.updateOne(
+      { _id: new ObjectId(messageId) },
+      { $set: { content } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ message: "Message introuvable ou inchangé" });
+    }
+
+    // Optionnel : émettre un événement "message_edited" si tu veux notifier clients
+    const updated = await messagesCollection.findOne({ _id: new ObjectId(messageId) });
+    const payload = serializeMessage(updated);
+    io.to(payload.receiverId).to(payload.senderId).emit("message_edited", payload);
+
+    res.json({ message: "Message modifié ✅" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Erreur lors de la modification du message" });
   }
 });
 
@@ -274,44 +584,105 @@ app.post("/signalement", async (req, res) => {
     });
     res.status(201).json({ message: "Signalement enregistré ✅" });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Erreur signalement" });
   }
 });
 
 // =========================
-// ⚡ SOCKET.IO
+// ⚡ SOCKET.IO - gestion des connexions
 // =========================
-const io = new Server(httpServer, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-});
-
 io.on("connection", (socket) => {
-  console.log(`🟢 Nouveau client connecté : ${socket.id}`);
+  console.log("Client connecté", socket.id);
 
-  socket.on("send_message", async (data) => {
-    const { senderId, receiverId, content } = data;
-    const msg = {
-      senderId: new ObjectId(senderId),
-      receiverId: new ObjectId(receiverId),
-      content,
-      createdAt: new Date(),
-    };
-    await messagesCollection.insertOne(msg);
-    io.emit("receive_message", msg);
+  // Rejoindre les rooms : chat + notifications
+  socket.on("join_notifications", (userId) => {
+    socket.join(userId);
+    console.log(`Utilisateur ${userId} rejoint sa room notifications`);
   });
 
-  socket.on("disconnect", () =>
-    console.log(`🔴 Client déconnecté : ${socket.id}`)
-  );
+  socket.on("join_chat", (userId) => {
+    socket.join(userId);
+    console.log(`Utilisateur ${userId} rejoint sa room chat`);
+  });
+
+  // ⚡ Gestion messages depuis le client via socket
+  socket.on("send_message", async (data) => {
+    try {
+      // stocker en DB (comme dans la route POST /send)
+      const msgDoc = {
+        senderId: new ObjectId(data.senderId),
+        receiverId: new ObjectId(data.receiverId),
+        content: data.content,
+        createdAt: new Date(),
+      };
+      const r = await messagesCollection.insertOne(msgDoc);
+
+      const payload = {
+        _id: r.insertedId.toString(),
+        senderId: data.senderId.toString(),
+        receiverId: data.receiverId.toString(),
+        content: data.content,
+        timestamp: msgDoc.createdAt.toISOString(),
+      };
+
+      // émettre vers les deux rooms (receiver et sender)
+      io.to(payload.receiverId).to(payload.senderId).emit("receive_message", payload);
+    } catch (err) {
+      console.error("Erreur dans socket send_message :", err);
+    }
+  });
+
+  // ⚡ Gestion notifications de demande d'ami via socket
+  socket.on("send_friend_request", async (data) => {
+    const { senderId, receiverId } = data;
+
+    try {
+      const existing = await friendsCollection.findOne({
+        $or: [
+          { senderId: new ObjectId(senderId), receiverId: new ObjectId(receiverId) },
+          { senderId: new ObjectId(receiverId), receiverId: new ObjectId(senderId) },
+        ],
+      });
+
+      if (!existing) {
+        const request = {
+          senderId: new ObjectId(senderId),
+          receiverId: new ObjectId(receiverId),
+          status: "pending",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        await friendsCollection.insertOne(request);
+
+        // Notification ciblée
+        io.to(receiverId.toString()).emit("friend_request_received", {
+          senderId,
+          message: "Vous avez reçu une nouvelle demande d'ami !",
+        });
+      }
+    } catch (err) {
+      console.error("Erreur dans socket send_friend_request :", err);
+    }
+  });
+
+  socket.on("disconnect", () => console.log("Client déconnecté", socket.id));
 });
 
-// 🔌 Fermeture MongoDB
+// =========================
+// 🔌 Démarrage serveur & fermeture MongoDB
+// =========================
+
+// 🔌 Fermeture MongoDB propre
 process.on("SIGINT", async () => {
-  await client.close();
-  console.log("🔌 Connexion MongoDB fermée");
-  process.exit(0);
+  try {
+    await client.close();
+    console.log("🔌 Connexion MongoDB fermée");
+    process.exit(0);
+  } catch (err) {
+    console.error("Erreur lors de la fermeture MongoDB :", err);
+    process.exit(1);
+  }
 });
 
-
-
-export default app;
+export default httpServer;
