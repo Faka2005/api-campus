@@ -18,7 +18,7 @@ const allowedOrigins = [
 // 🚀 Initialisation Express
 const app = express();
 export const PORT = process.env.PORT || 5000;
-
+const httpServer = createServer(app);
 // ⚙️ Middlewares globaux
 app.use(cors({
   origin: (origin, callback) => {
