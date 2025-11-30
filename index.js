@@ -14,9 +14,8 @@ dotenv.config();
 // 🚀 Initialisation Express
 const app = express();
 export const PORT = process.env.PORT || 5000;
-
 // ⚙️ Middlewares globaux
-app.use(cors());
+app.use(cors({ origin: ["http://localhost:5173"], credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
 // 🌍 Connexion MongoDB
@@ -63,13 +62,17 @@ const upload = multer({
 // =========================
 // ⚡ HTTP + Socket.io (créés tôt pour être disponibles dans les routes)
 // =========================
+
+
 const httpServer = createServer(app);
+
 export const io = new Server(httpServer, {
-    cors: {
-        origin: "http://localhost:5173",
-        methods: ["GET", "POST"],
-        credentials: true,
-    },
+  cors: {
+    origin: ["http://localhost:5173/","https://campus-centre.vercel.app/"],
+    methods: ["GET","POST"],
+    credentials: true,
+  },
+  transports: ["websocket","polling"], // fallback automatique
 });
 
 // Helper: convertit un document message Mongo en objet sérialisable côté client
@@ -591,6 +594,8 @@ app.post("/signalement", async (req, res) => {
 // =========================
 // ⚡ SOCKET.IO - gestion des connexions
 // =========================
+const onlineUsers = new Map;
+
 io.on("connection", (socket) => {
     console.log("Client connecté", socket.id);
 
