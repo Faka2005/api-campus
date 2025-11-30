@@ -15,7 +15,7 @@ dotenv.config();
 const app = express();
 export const PORT = process.env.PORT || 5000;
 // ⚙️ Middlewares globaux
-app.use(cors({ origin: ["http://localhost:5173"], credentials: true }));
+app.use(cors({ origin: ["https://campus-centre.vercel.app"], credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
 // 🌍 Connexion MongoDB
