@@ -500,7 +500,7 @@ app.get("/conversation/:userId1/:userId2", async (req, res) => {
 /**
 * 🔹 Envoyer un message
 */
-app.post("/send", async (req, res) => {
+app.post("/message/send", async (req, res) => {
     const { senderId, receiverId, content } = req.body;
 
     if (!senderId || !receiverId || !content) {
@@ -539,7 +539,7 @@ app.post("/send", async (req, res) => {
 /**
 * 🔹 Modifier un message
 */
-app.put("/edit/:messageId", async (req, res) => {
+app.put("/message/edit/:messageId", async (req, res) => {
     const { messageId } = req.params;
     const { content } = req.body;
 
