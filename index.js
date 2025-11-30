@@ -635,7 +635,7 @@ io.on("connection", (socket) => {
             };
 
             // émettre vers les deux rooms (receiver et sender)
-            io.to(payload.receiverId).to(payload.senderId).emit("receive_message", payload);
+            io.to(payload.receiverId).temit("receive_message", payload);
         } catch (err) {
             console.error("Erreur dans socket send_message :", err);
         }
